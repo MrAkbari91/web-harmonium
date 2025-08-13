@@ -1,45 +1,45 @@
 "use client"
 
-import { useEffect, useState, useRef, useCallback } from "react"
+import { useState, useEffect, useRef, useCallback } from "react"
+import { Volume2, Settings, Keyboard, Music, Info, Sun, Moon, Monitor } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Slider } from "@/components/ui/slider"
 import { Switch } from "@/components/ui/switch"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { Volume2, Piano, Settings, Minus, Plus } from "lucide-react"
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog"
+import { Badge } from "@/components/ui/badge"
+import { useTheme } from "next-themes"
 
-interface MIDIInput {
-  id: string
-  name: string
-  manufacturer: string
+interface AudioContextType extends AudioContext {
+  createGain(): GainNode
+  createBufferSource(): AudioBufferSourceNode
+  createConvolver(): ConvolverNode
+  decodeAudioData(audioData: ArrayBuffer): Promise<AudioBuffer>
 }
 
 export default function WebHarmonium() {
-  // Audio context and nodes
-  const [audioContext, setAudioContext] = useState<AudioContext | null>(null)
-  const [audioBuffer, setAudioBuffer] = useState<AudioBuffer | null>(null)
-  const [gainNode, setGainNode] = useState<GainNode | null>(null)
-  const [reverbNode, setReverbNode] = useState<ConvolverNode | null>(null)
-
-  // Settings state
+  const { theme, setTheme } = useTheme()
+  const [isLoaded, setIsLoaded] = useState(false)
   const [volume, setVolume] = useState(30)
   const [useReverb, setUseReverb] = useState(false)
   const [transpose, setTranspose] = useState(0)
-  const [octave, setOctave] = useState(3)
+  const [currentOctave, setCurrentOctave] = useState(3)
   const [additionalReeds, setAdditionalReeds] = useState(0)
-  const [midiDevices, setMidiDevices] = useState<MIDIInput[]>([])
-  const [selectedMidiDevice, setSelectedMidiDevice] = useState<string>("none") // Updated default value
+  const [midiDevices, setMidiDevices] = useState<any[]>([])
+  const [selectedMidiDevice, setSelectedMidiDevice] = useState<string>("")
   const [midiSupported, setMidiSupported] = useState(false)
-  const [isLoading, setIsLoading] = useState(true)
+  const [showInstructions, setShowInstructions] = useState(false)
+  const [showThemeSelector, setShowThemeSelector] = useState(false)
 
-  // Refs for audio nodes and state
-  const sourceNodesRef = useRef<(AudioBufferSourceNode | null)[]>(new Array(128).fill(null))
-  const sourceNodeStateRef = useRef<number[]>(new Array(128).fill(0))
-  const keyMapRef = useRef<number[]>([])
-  const baseKeyMapRef = useRef<number[]>([])
-  const midiAccessRef = useRef<MIDIAccess | null>(null)
+  const audioContextRef = useRef<AudioContextType | null>(null)
+  const audioBufferRef = useRef<AudioBuffer | null>(null)
+  const reverbBufferRef = useRef<AudioBuffer | null>(null)
+  const gainNodeRef = useRef<GainNode | null>(null)
+  const reverbNodeRef = useRef<ConvolverNode | null>(null)
+  const sourceNodesRef = useRef<(AudioBufferSourceNode | null)[]>([])
+  const sourceNodeStateRef = useRef<number[]>([])
 
-  // Constants
   const keyboardMap: { [key: string]: number } = {
     s: 53,
     S: 53,
@@ -82,135 +82,261 @@ export default function WebHarmonium() {
     ";": 79,
   }
 
+  const swaramMap: { [key: string]: string } = {
+    s: "Ṃ",
+    S: "Ṃ",
+    a: "Ṃ",
+    A: "Ṃ",
+    "`": "P̣",
+    "1": "Ḍ",
+    q: "Ḍ",
+    Q: "Ḍ",
+    "2": "Ṇ",
+    w: "Ṇ",
+    W: "Ṇ",
+    e: "S",
+    E: "S",
+    "4": "R",
+    r: "R",
+    R: "R",
+    "5": "G",
+    t: "G",
+    T: "G",
+    y: "M",
+    Y: "M",
+    "7": "M",
+    u: "P",
+    U: "P",
+    "8": "D",
+    i: "D",
+    I: "D",
+    "9": "N",
+    o: "N",
+    O: "N",
+    p: "Ṡ",
+    P: "Ṡ",
+    "-": "Ṙ",
+    "[": "Ṙ",
+    "=": "Ġ",
+    "]": "Ġ",
+    "\\": "Ṁ",
+    "'": "Ṁ",
+    ";": "Ṗ",
+  }
+
   const octaveMap = [-36, -24, -12, 0, 12, 24, 36]
   const baseKeyNames = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
-  const middleC = 60
-  const rootKey = 62
+  const keyMap = useRef<number[]>([])
+  const baseKeyMap = useRef<number[]>([])
 
-  // Keyboard layout for visual display
-  const keyboardLayout = [
-    { key: "`", type: "white", label: "`", note: "P̣" },
-    { key: "1", type: "black", label: "1", note: "Ḍ" },
-    { key: "q", type: "white", label: "q", note: "Ḍ" },
-    { key: "2", type: "black", label: "2", note: "Ṇ" },
-    { key: "w", type: "white", label: "w", note: "Ṇ" },
-    { key: "e", type: "white", label: "e", note: "S" },
-    { key: "4", type: "black", label: "4", note: "R" },
-    { key: "r", type: "white", label: "r", note: "R" },
-    { key: "5", type: "black", label: "5", note: "G" },
-    { key: "t", type: "white", label: "t", note: "G" },
-    { key: "y", type: "white", label: "y", note: "M" },
-    { key: "7", type: "black", label: "7", note: "M" },
-    { key: "u", type: "white", label: "u", note: "P" },
-    { key: "8", type: "black", label: "8", note: "D" },
-    { key: "i", type: "white", label: "i", note: "D" },
-    { key: "9", type: "black", label: "9", note: "N" },
-    { key: "o", type: "white", label: "o", note: "N" },
-    { key: "p", type: "white", label: "p", note: "Ṡ" },
-    { key: "-", type: "black", label: "-", note: "Ṙ" },
-    { key: "[", type: "white", label: "[", note: "Ṙ" },
-    { key: "=", type: "black", label: "=", note: "Ġ" },
-    { key: "]", type: "white", label: "]", note: "Ġ" },
-    { key: "\\", type: "white", label: "\\", note: "Ṁ" },
-  ]
+  const initializeAudio = useCallback(async () => {
+    try {
+      const AudioContext = window.AudioContext || (window as any).webkitAudioContext
+      audioContextRef.current = new AudioContext()
 
-  // Initialize key mappings
-  const initializeKeyMaps = useCallback(() => {
+      gainNodeRef.current = audioContextRef.current.createGain()
+      gainNodeRef.current.gain.value = volume / 100
+      gainNodeRef.current.connect(audioContextRef.current.destination)
+
+      reverbNodeRef.current = audioContextRef.current.createConvolver()
+      reverbNodeRef.current.connect(audioContextRef.current.destination)
+
+      // Load harmonium sample
+      const harmoniumResponse = await fetch("https://hebbkx1anhila5yf.public.blob.vercel-storage.com/harmonium-kannan-orig-6DIgVWUXlXjskJRcrUvRNLUBNigcyy.wav")
+      const harmoniumArrayBuffer = await harmoniumResponse.arrayBuffer()
+      audioBufferRef.current = await audioContextRef.current.decodeAudioData(harmoniumArrayBuffer)
+
+      // Load reverb impulse response
+      const reverbResponse = await fetch("https://hebbkx1anhila5yf.public.blob.vercel-storage.com/reverb-OkQQ8iqL5OAhhMOQOXryBDa6TDHb1a.wav")
+      const reverbArrayBuffer = await reverbResponse.arrayBuffer()
+      reverbBufferRef.current = await audioContextRef.current.decodeAudioData(reverbArrayBuffer)
+      reverbNodeRef.current.buffer = reverbBufferRef.current
+
+      initializeKeyMap()
+      initializeSourceNodes()
+      setIsLoaded(true)
+    } catch (error) {
+      console.error("Error initializing audio:", error)
+    }
+  }, [volume])
+
+  const initializeKeyMap = useCallback(() => {
+    const middleC = 60
+    const rootKey = 62
     const startKey = middleC - 124 + (rootKey - middleC)
+
     for (let i = 0; i < 128; i++) {
-      baseKeyMapRef.current[i] = startKey + i
-      keyMapRef.current[i] = baseKeyMapRef.current[i] + transpose
+      baseKeyMap.current[i] = startKey + i
+      keyMap.current[i] = baseKeyMap.current[i] + transpose
     }
   }, [transpose])
 
-  // Create source node for a specific key
-  const setSourceNode = useCallback(
-    (i: number) => {
-      if (!audioContext || !audioBuffer || !gainNode) return
-
-      if (sourceNodesRef.current[i] && sourceNodeStateRef.current[i] === 1) {
-        sourceNodesRef.current[i]?.stop(0)
-      }
-
-      sourceNodeStateRef.current[i] = 0
-      sourceNodesRef.current[i] = null
-
-      const sourceNode = audioContext.createBufferSource()
-      sourceNode.connect(gainNode).connect(audioContext.destination)
-      sourceNode.buffer = audioBuffer
-      sourceNode.loop = true
-      sourceNode.loopStart = 0.5
-
-      if (keyMapRef.current[i] !== 0) {
-        sourceNode.detune.value = keyMapRef.current[i] * 100
-      }
-
-      sourceNodesRef.current[i] = sourceNode
-    },
-    [audioContext, audioBuffer, gainNode],
-  )
-
-  // Initialize all source nodes
   const initializeSourceNodes = useCallback(() => {
+    if (!audioContextRef.current || !audioBufferRef.current) return
+
+    sourceNodesRef.current = new Array(128).fill(null)
+    sourceNodeStateRef.current = new Array(128).fill(0)
+
     for (let i = 0; i < 128; i++) {
       setSourceNode(i)
     }
-  }, [setSourceNode])
+  }, [])
 
-  // Play note
+  const setSourceNode = useCallback(
+    (index: number) => {
+      if (!audioContextRef.current || !audioBufferRef.current || !gainNodeRef.current) return
+
+      if (sourceNodesRef.current[index] && sourceNodeStateRef.current[index] === 1) {
+        sourceNodesRef.current[index]?.stop(0)
+      }
+
+      sourceNodeStateRef.current[index] = 0
+      sourceNodesRef.current[index] = audioContextRef.current.createBufferSource()
+      sourceNodesRef.current[index]!.connect(gainNodeRef.current)
+
+      if (useReverb && reverbNodeRef.current) {
+        gainNodeRef.current.connect(reverbNodeRef.current)
+      } else {
+        try {
+          gainNodeRef.current.disconnect(reverbNodeRef.current!)
+        } catch (e) {
+          // Ignore disconnect errors
+        }
+      }
+
+      sourceNodesRef.current[index]!.buffer = audioBufferRef.current
+      sourceNodesRef.current[index]!.loop = true
+      sourceNodesRef.current[index]!.loopStart = 0.5
+      sourceNodesRef.current[index]!.loopEnd = 7.5
+
+      if (keyMap.current[index] !== 0) {
+        sourceNodesRef.current[index]!.detune.value = keyMap.current[index] * 100
+      }
+    },
+    [useReverb],
+  )
+
   const noteOn = useCallback(
     (note: number) => {
-      const i = note + octaveMap[octave]
-      if (i < sourceNodesRef.current.length && sourceNodeStateRef.current[i] === 0) {
-        sourceNodesRef.current[i]?.start(0)
-        sourceNodeStateRef.current[i] = 1
+      const index = note + octaveMap[currentOctave]
+      if (index < sourceNodesRef.current.length && sourceNodeStateRef.current[index] === 0) {
+        sourceNodesRef.current[index]?.start(0)
+        sourceNodeStateRef.current[index] = 1
       }
 
-      // Play additional reeds
+      // Additional reeds
       for (let c = 1; c <= additionalReeds; c++) {
-        const idx = note + octaveMap[octave + c]
-        if (idx < sourceNodesRef.current.length && sourceNodeStateRef.current[idx] === 0) {
-          sourceNodesRef.current[idx]?.start(0)
-          sourceNodeStateRef.current[idx] = 1
+        const additionalIndex = note + octaveMap[currentOctave + c]
+        if (additionalIndex < sourceNodesRef.current.length && sourceNodeStateRef.current[additionalIndex] === 0) {
+          sourceNodesRef.current[additionalIndex]?.start(0)
+          sourceNodeStateRef.current[additionalIndex] = 1
         }
       }
     },
-    [octave, additionalReeds],
+    [currentOctave, additionalReeds],
   )
 
-  // Stop note
   const noteOff = useCallback(
     (note: number) => {
-      const i = note + octaveMap[octave]
-      if (i < sourceNodesRef.current.length) {
-        setSourceNode(i)
+      const index = note + octaveMap[currentOctave]
+      if (index < sourceNodesRef.current.length) {
+        setSourceNode(index)
       }
 
-      // Stop additional reeds
+      // Additional reeds
       for (let c = 1; c <= additionalReeds; c++) {
-        const idx = note + octaveMap[octave + c]
-        if (idx < sourceNodesRef.current.length) {
-          setSourceNode(idx)
+        const additionalIndex = note + octaveMap[currentOctave + c]
+        if (additionalIndex < sourceNodesRef.current.length) {
+          setSourceNode(additionalIndex)
         }
       }
     },
-    [octave, additionalReeds, setSourceNode],
+    [currentOctave, additionalReeds, setSourceNode],
   )
 
-  // Handle keyboard events
+  const handleKeyDown = useCallback(
+    (event: KeyboardEvent) => {
+      if (event.repeat || !isLoaded) return
+
+      const key = event.key
+      if (keyboardMap[key] !== undefined) {
+        noteOn(keyboardMap[key])
+      }
+    },
+    [isLoaded, noteOn],
+  )
+
+  const handleKeyUp = useCallback(
+    (event: KeyboardEvent) => {
+      if (!isLoaded) return
+
+      const key = event.key
+      if (keyboardMap[key] !== undefined) {
+        noteOff(keyboardMap[key])
+      }
+    },
+    [isLoaded, noteOff],
+  )
+
+  /**
+   * Initialise WebMIDI if both the API and the browser-permission are available.
+   * If the permissions policy blocks MIDI (the common case in iframes / previews),
+   * we silently disable the feature instead of throwing.
+   */
+  const initializeMIDI = useCallback(async () => {
+    // 1. API available?
+    if (typeof navigator === "undefined" || typeof navigator.requestMIDIAccess !== "function") {
+      setMidiSupported(false)
+      return
+    }
+
+    // 2. Permission granted / prompt? (Some browsers support “midi” permission query)
+    if (navigator.permissions && (navigator as any).permissions.query) {
+      try {
+        const status = await (navigator as any).permissions.query({ name: "midi", sysex: false })
+        if (status.state === "denied") {
+          setMidiSupported(false)
+          return
+        }
+      } catch {
+        // Ignore – permissions API not fully supported
+      }
+    }
+
+    try {
+      const midiAccess = await navigator.requestMIDIAccess({ sysex: false })
+      setMidiSupported(true)
+
+      const devices: any[] = []
+      for (const input of midiAccess.inputs.values()) {
+        devices.push({
+          id: input.id,
+          name: input.name,
+          manufacturer: input.manufacturer,
+        })
+
+        input.onmidimessage = (message: any) => {
+          if (selectedMidiDevice === input.id || selectedMidiDevice === "") {
+            const [command, note, velocity = 0] = message.data
+            if (command === 144 && velocity > 0) noteOn(note)
+            else if (command === 128 || (command === 144 && velocity === 0)) noteOff(note)
+          }
+        }
+      }
+      setMidiDevices(devices)
+    } catch (err) {
+      // Most likely blocked by permissions policy (e.g. preview sandbox)
+      console.warn("WebMIDI disabled:", err)
+      setMidiSupported(false)
+    }
+  }, [selectedMidiDevice, noteOn, noteOff])
+
   useEffect(() => {
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (!event.repeat && keyboardMap[event.key]) {
-        noteOn(keyboardMap[event.key])
-      }
-    }
+    initializeAudio()
+    initializeMIDI()
+  }, [initializeAudio, initializeMIDI])
 
-    const handleKeyUp = (event: KeyboardEvent) => {
-      if (keyboardMap[event.key]) {
-        noteOff(keyboardMap[event.key])
-      }
-    }
-
+  useEffect(() => {
     window.addEventListener("keydown", handleKeyDown)
     window.addEventListener("keyup", handleKeyUp)
 
@@ -218,457 +344,449 @@ export default function WebHarmonium() {
       window.removeEventListener("keydown", handleKeyDown)
       window.removeEventListener("keyup", handleKeyUp)
     }
-  }, [noteOn, noteOff])
+  }, [handleKeyDown, handleKeyUp])
 
-  // Initialize MIDI
-  const initializeMIDI = useCallback(async () => {
-    try {
-      if (navigator.requestMIDIAccess) {
-        setMidiSupported(true)
-        const midiAccess = await navigator.requestMIDIAccess()
-        midiAccessRef.current = midiAccess
-
-        const devices: MIDIInput[] = []
-        for (const input of midiAccess.inputs.values()) {
-          devices.push({
-            id: input.id,
-            name: input.name || "Unknown Device",
-            manufacturer: input.manufacturer || "Unknown",
-          })
-
-          input.onmidimessage = (message) => {
-            const [command, note, velocity] = message.data
-
-            if (selectedMidiDevice === "none" || selectedMidiDevice === input.id) {
-              switch (command) {
-                case 144: // Note on
-                  if (velocity > 0) {
-                    noteOn(note)
-                  } else {
-                    noteOff(note)
-                  }
-                  break
-                case 128: // Note off
-                  noteOff(note)
-                  break
-                case 176: // Control change
-                  if (note === 7) {
-                    // Volume
-                    setVolume(Math.round((100 * velocity) / 127))
-                  }
-                  break
-              }
-            }
-          }
-        }
-
-        setMidiDevices(devices)
-      }
-    } catch (error) {
-      console.error("MIDI initialization failed:", error)
-    }
-  }, [noteOn, noteOff, selectedMidiDevice])
-
-  // Initialize reverb
-  const initializeReverb = useCallback(async () => {
-    if (!audioContext) return
-
-    try {
-      const response = await fetch("https://hebbkx1anhila5yf.public.blob.vercel-storage.com/reverb-FcSErFWUogkHpdaMQGI1vBWDMjg3UC.wav")
-      const arrayBuffer = await response.arrayBuffer()
-      const reverbBuffer = await audioContext.decodeAudioData(arrayBuffer)
-
-      const convolver = audioContext.createConvolver()
-      convolver.buffer = reverbBuffer
-      convolver.connect(audioContext.destination)
-
-      setReverbNode(convolver)
-    } catch (error) {
-      console.error("Reverb initialization failed:", error)
-    }
-  }, [audioContext])
-
-  // Update reverb connection
   useEffect(() => {
-    if (!gainNode || !reverbNode) return
+    if (gainNodeRef.current) {
+      gainNodeRef.current.gain.value = volume / 100
+    }
+  }, [volume])
 
-    try {
+  useEffect(() => {
+    initializeKeyMap()
+    initializeSourceNodes()
+  }, [transpose, initializeKeyMap, initializeSourceNodes])
+
+  useEffect(() => {
+    if (gainNodeRef.current && reverbNodeRef.current) {
       if (useReverb) {
-        gainNode.connect(reverbNode)
+        gainNodeRef.current.connect(reverbNodeRef.current)
       } else {
-        gainNode.disconnect(reverbNode)
+        try {
+          gainNodeRef.current.disconnect(reverbNodeRef.current)
+        } catch (e) {
+          // Ignore disconnect errors
+        }
       }
-    } catch (error) {
-      // Ignore disconnect errors
     }
-  }, [useReverb, gainNode, reverbNode])
-
-  // Update volume
-  useEffect(() => {
-    if (gainNode) {
-      gainNode.gain.value = volume / 100
-    }
-    localStorage.setItem("webharmonium.volume", volume.toString())
-  }, [volume, gainNode])
-
-  // Update other settings in localStorage
-  useEffect(() => {
-    localStorage.setItem("webharmonium.useReverb", useReverb.toString())
   }, [useReverb])
 
-  useEffect(() => {
-    localStorage.setItem("webharmonium.transpose", transpose.toString())
-  }, [transpose])
-
-  useEffect(() => {
-    localStorage.setItem("webharmonium.octave", octave.toString())
-  }, [octave])
-
-  useEffect(() => {
-    localStorage.setItem("webharmonium.stack", additionalReeds.toString())
-  }, [additionalReeds])
-
-  // Load settings from localStorage
-  useEffect(() => {
-    const savedVolume = localStorage.getItem("webharmonium.volume")
-    const savedReverb = localStorage.getItem("webharmonium.useReverb")
-    const savedTranspose = localStorage.getItem("webharmonium.transpose")
-    const savedOctave = localStorage.getItem("webharmonium.octave")
-    const savedStack = localStorage.getItem("webharmonium.stack")
-
-    if (savedVolume) setVolume(Number.parseInt(savedVolume))
-    if (savedReverb) setUseReverb(savedReverb === "true")
-    if (savedTranspose) setTranspose(Number.parseInt(savedTranspose))
-    if (savedOctave) setOctave(Number.parseInt(savedOctave))
-    if (savedStack) setAdditionalReeds(Number.parseInt(savedStack))
-  }, [])
-
-  // Update key maps when transpose changes
-  useEffect(() => {
-    initializeKeyMaps()
-    initializeSourceNodes()
-  }, [transpose, initializeKeyMaps, initializeSourceNodes])
-
-  // Initialize everything on mount
-  useEffect(() => {
-    const initialize = async () => {
-      try {
-        // Create audio context
-        const context = new (window.AudioContext || (window as any).webkitAudioContext)()
-        setAudioContext(context)
-
-        // Create gain node
-        const gain = context.createGain()
-        gain.gain.value = volume / 100
-        gain.connect(context.destination)
-        setGainNode(gain)
-
-        // Load harmonium sample
-        const response = await fetch("https://hebbkx1anhila5yf.public.blob.vercel-storage.com/harmonium-kannan-orig-kF5yzA3bjSGnjxSd0m7ODzg3ijgAXl.wav")
-        const arrayBuffer = await response.arrayBuffer()
-        const buffer = await context.decodeAudioData(arrayBuffer)
-        setAudioBuffer(buffer)
-
-        // Initialize key maps
-        initializeKeyMaps()
-
-        setIsLoading(false)
-      } catch (error) {
-        console.error("Initialization failed:", error)
-        setIsLoading(false)
-      }
-    }
-
-    initialize()
-  }, [volume, initializeKeyMaps])
-
-  // Initialize MIDI and reverb after audio context is ready
-  useEffect(() => {
-    if (audioContext && !isLoading) {
-      initializeMIDI()
-      initializeReverb()
-    }
-  }, [audioContext, isLoading, initializeMIDI, initializeReverb])
-
-  // Initialize source nodes after audio buffer is loaded
-  useEffect(() => {
-    if (audioBuffer && gainNode) {
-      initializeSourceNodes()
-    }
-  }, [audioBuffer, gainNode, initializeSourceNodes])
-
   const getRootNoteName = () => {
-    const semitone = transpose >= 0 ? transpose % 12 : transpose + 12
-    return baseKeyNames[semitone]
+    return baseKeyNames[transpose >= 0 ? transpose % 12 : transpose + 12]
   }
 
-  const handleKeyPress = (key: string, isPressed: boolean) => {
-    const note = keyboardMap[key]
-    if (note) {
-      if (isPressed) {
-        noteOn(note)
-      } else {
-        noteOff(note)
-      }
-    }
-  }
+  const HarmoniumKeys = () => {
+    const keys = [
+      { key: "`", type: "white", note: "P̣", keyName: "C" },
+      { key: "1", type: "black", note: "Ḍ" },
+      { key: "q", type: "white", note: "Ḍ", keyName: "D" },
+      { key: "2", type: "black", note: "Ṇ" },
+      { key: "w", type: "white", note: "Ṇ", keyName: "E" },
+      { key: "e", type: "white", note: "S", keyName: "F" },
+      { key: "4", type: "black", note: "R" },
+      { key: "r", type: "white", note: "R", keyName: "G" },
+      { key: "5", type: "black", note: "G" },
+      { key: "t", type: "white", note: "G", keyName: "A" },
+      { key: "y", type: "white", note: "M", keyName: "B" },
+      { key: "7", type: "black", note: "M" },
+      { key: "u", type: "white", note: "P", keyName: "C" },
+      { key: "8", type: "black", note: "D" },
+      { key: "i", type: "white", note: "D", keyName: "D" },
+      { key: "9", type: "black", note: "N" },
+      { key: "o", type: "white", note: "N", keyName: "E" },
+      { key: "p", type: "white", note: "Ṡ", keyName: "F" },
+      { key: "-", type: "black", note: "Ṙ" },
+      { key: "[", type: "white", note: "Ṙ", keyName: "G" },
+      { key: "=", type: "black", note: "Ġ" },
+      { key: "]", type: "white", note: "Ġ", keyName: "A" },
+      { key: "\\", type: "white", note: "Ṁ", keyName: "B" },
+    ]
 
-  if (isLoading) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex items-center justify-center">
+      <div className="flex justify-center mb-8">
+        <div className="relative">
+          <svg
+            width="460"
+            height="120"
+            className="border rounded-lg shadow-lg bg-gradient-to-b from-gray-100 to-gray-200 dark:from-gray-800 dark:to-gray-900"
+          >
+            {keys.map((keyData, index) => {
+              const isWhite = keyData.type === "white"
+              const width = isWhite ? 20 : 14
+              const height = isWhite ? 100 : 60
+              const x = isWhite ? index * 20 : (index - 0.5) * 20 - 7
+              const y = 10
+
+              return (
+                <g key={keyData.key}>
+                  <rect
+                    x={x}
+                    y={y}
+                    width={width}
+                    height={height}
+                    fill={isWhite ? "white" : "#1f2937"}
+                    stroke="#374151"
+                    strokeWidth="1"
+                    className="transition-colors duration-150"
+                    rx="2"
+                  />
+                  <text
+                    x={x + width / 2}
+                    y={y + (isWhite ? 25 : 20)}
+                    textAnchor="middle"
+                    className={`text-xs font-mono ${isWhite ? "fill-gray-700" : "fill-white"}`}
+                  >
+                    {keyData.key}
+                  </text>
+                  {keyData.note && (
+                    <text
+                      x={x + width / 2}
+                      y={y + (isWhite ? 45 : 40)}
+                      textAnchor="middle"
+                      className={`text-xs font-semibold ${isWhite ? "fill-blue-600" : "fill-blue-300"}`}
+                    >
+                      {keyData.note}
+                    </text>
+                  )}
+                  {keyData.keyName && isWhite && (
+                    <text x={x + width / 2} y={y + 85} textAnchor="middle" className="text-xs font-bold fill-green-600">
+                      {keyData.keyName}
+                    </text>
+                  )}
+                </g>
+              )
+            })}
+          </svg>
+        </div>
+      </div>
+    )
+  }
+
+  if (!isLoaded) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 dark:from-gray-900 dark:to-gray-800 flex items-center justify-center">
         <div className="text-center">
           <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
-          <p className="text-lg text-gray-600">Loading Web Harmonium...</p>
+          <h2 className="text-xl font-semibold text-gray-700 dark:text-gray-300">Loading Web Harmonium...</h2>
+          <p className="text-gray-500 dark:text-gray-400 mt-2">Preparing audio samples and MIDI support</p>
         </div>
       </div>
     )
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-4">
-      <div className="max-w-6xl mx-auto">
+    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 dark:from-gray-900 dark:to-gray-800 transition-colors duration-300">
+      <div className="container mx-auto px-4 py-8">
         {/* Header */}
         <div className="text-center mb-8">
-          <h1 className="text-4xl font-bold text-gray-800 mb-2 flex items-center justify-center gap-2">
-            <Piano className="h-8 w-8 text-blue-600" />
-            Web Harmonium
-          </h1>
-          <p className="text-gray-600">Play using your keyboard or connect a MIDI device</p>
+          <div className="flex items-center justify-center gap-4 mb-4">
+            <Music className="h-8 w-8 text-blue-600" />
+            <h1 className="text-4xl font-bold text-gray-800 dark:text-white">Web Harmonium</h1>
+            <div className="flex gap-2">
+              <Dialog open={showInstructions} onOpenChange={setShowInstructions}>
+                <DialogTrigger asChild>
+                  <Button variant="outline" size="sm">
+                    <Info className="h-4 w-4 mr-2" />
+                    Instructions
+                  </Button>
+                </DialogTrigger>
+                <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
+                  <DialogHeader>
+                    <DialogTitle>How to Use Web Harmonium</DialogTitle>
+                  </DialogHeader>
+                  <div className="space-y-4 text-sm">
+                    <div>
+                      <h3 className="font-semibold mb-2">Keyboard Controls:</h3>
+                      <ul className="list-disc list-inside space-y-1 text-gray-600 dark:text-gray-400">
+                        <li>Use your computer keyboard to play notes</li>
+                        <li>White keys: ` q w e r t y u i o p [ ] \</li>
+                        <li>Black keys: 1 2 4 5 7 8 9 - =</li>
+                        <li>Each key corresponds to a specific musical note</li>
+                      </ul>
+                    </div>
+                    <div>
+                      <h3 className="font-semibold mb-2">Indian Classical Notation:</h3>
+                      <ul className="list-disc list-inside space-y-1 text-gray-600 dark:text-gray-400">
+                        <li>S (Sa), R (Re), G (Ga), M (Ma), P (Pa), D (Dha), N (Ni)</li>
+                        <li>Dots below notes indicate lower octave</li>
+                        <li>Dots above notes indicate higher octave</li>
+                      </ul>
+                    </div>
+                    <div>
+                      <h3 className="font-semibold mb-2">Controls:</h3>
+                      <ul className="list-disc list-inside space-y-1 text-gray-600 dark:text-gray-400">
+                        <li>
+                          <strong>Volume:</strong> Adjust the overall volume level
+                        </li>
+                        <li>
+                          <strong>Reverb:</strong> Add spatial depth to the sound
+                        </li>
+                        <li>
+                          <strong>Transpose:</strong> Change the root key/pitch
+                        </li>
+                        <li>
+                          <strong>Octave:</strong> Shift the playing range up or down
+                        </li>
+                        <li>
+                          <strong>Additional Reeds:</strong> Layer multiple octaves for richer sound
+                        </li>
+                        <li>
+                          <strong>MIDI:</strong> Connect external MIDI keyboards
+                        </li>
+                      </ul>
+                    </div>
+                  </div>
+                </DialogContent>
+              </Dialog>
+
+              <Dialog open={showThemeSelector} onOpenChange={setShowThemeSelector}>
+                <DialogTrigger asChild>
+                  <Button variant="outline" size="sm">
+                    {theme === "light" ? (
+                      <Sun className="h-4 w-4" />
+                    ) : theme === "dark" ? (
+                      <Moon className="h-4 w-4" />
+                    ) : (
+                      <Monitor className="h-4 w-4" />
+                    )}
+                  </Button>
+                </DialogTrigger>
+                <DialogContent className="max-w-sm">
+                  <DialogHeader>
+                    <DialogTitle>Choose Theme</DialogTitle>
+                  </DialogHeader>
+                  <div className="grid grid-cols-3 gap-2">
+                    <Button
+                      variant={theme === "light" ? "default" : "outline"}
+                      onClick={() => setTheme("light")}
+                      className="flex flex-col gap-2 h-16"
+                    >
+                      <Sun className="h-4 w-4" />
+                      Light
+                    </Button>
+                    <Button
+                      variant={theme === "dark" ? "default" : "outline"}
+                      onClick={() => setTheme("dark")}
+                      className="flex flex-col gap-2 h-16"
+                    >
+                      <Moon className="h-4 w-4" />
+                      Dark
+                    </Button>
+                    <Button
+                      variant={theme === "system" ? "default" : "outline"}
+                      onClick={() => setTheme("system")}
+                      className="flex flex-col gap-2 h-16"
+                    >
+                      <Monitor className="h-4 w-4" />
+                      System
+                    </Button>
+                  </div>
+                </DialogContent>
+              </Dialog>
+            </div>
+          </div>
+          <p className="text-gray-600 dark:text-gray-400">
+            Play traditional Indian harmonium using your keyboard or MIDI controller
+          </p>
+          <Badge variant="secondary" className="mt-2">
+            Current Key: {getRootNoteName()} | Octave: {currentOctave}
+          </Badge>
         </div>
 
-        {/* Virtual Keyboard */}
-        <Card className="mb-6">
-          <CardHeader>
-            <CardTitle className="text-center">Virtual Keyboard</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="flex justify-center">
-              <div className="relative">
-                <svg width="800" height="120" className="border rounded-lg bg-white shadow-inner">
-                  {keyboardLayout.map((keyInfo, index) => {
-                    const isWhite = keyInfo.type === "white"
-                    const x = index * (isWhite ? 35 : 0) + (isWhite ? 0 : -10)
-                    const width = isWhite ? 34 : 20
-                    const height = isWhite ? 100 : 60
+        {/* Harmonium Keys */}
+        <HarmoniumKeys />
 
-                    return (
-                      <g key={keyInfo.key}>
-                        <rect
-                          x={x}
-                          y={0}
-                          width={width}
-                          height={height}
-                          fill={isWhite ? "white" : "black"}
-                          stroke="#ccc"
-                          strokeWidth="1"
-                          className="cursor-pointer hover:opacity-80 transition-opacity"
-                          onMouseDown={() => handleKeyPress(keyInfo.key, true)}
-                          onMouseUp={() => handleKeyPress(keyInfo.key, false)}
-                          onMouseLeave={() => handleKeyPress(keyInfo.key, false)}
-                        />
-                        <text
-                          x={x + width / 2}
-                          y={isWhite ? 80 : 40}
-                          textAnchor="middle"
-                          fill={isWhite ? "black" : "white"}
-                          fontSize="12"
-                          fontFamily="monospace"
-                        >
-                          {keyInfo.label}
-                        </text>
-                        {isWhite && (
-                          <text
-                            x={x + width / 2}
-                            y={95}
-                            textAnchor="middle"
-                            fill="blue"
-                            fontSize="10"
-                            fontWeight="bold"
-                          >
-                            {keyInfo.note}
-                          </text>
-                        )}
-                      </g>
-                    )
-                  })}
-                </svg>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-
-        {/* Controls */}
+        {/* Controls Grid */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
           {/* Volume Control */}
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <Volume2 className="h-5 w-5" />
-                Volume: {volume}%
+          <Card className="bg-white/80 dark:bg-gray-800/80 backdrop-blur-sm">
+            <CardHeader className="pb-3">
+              <CardTitle className="flex items-center gap-2 text-lg">
+                <Volume2 className="h-5 w-5 text-blue-600" />
+                Volume
               </CardTitle>
             </CardHeader>
             <CardContent>
-              <Slider
-                value={[volume]}
-                onValueChange={(value) => setVolume(value[0])}
-                max={100}
-                min={1}
-                step={1}
-                className="w-full"
-              />
+              <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-gray-600 dark:text-gray-400">Level</span>
+                  <Badge variant="outline">{volume}%</Badge>
+                </div>
+                <Slider
+                  value={[volume]}
+                  onValueChange={(value) => setVolume(value[0])}
+                  max={100}
+                  min={1}
+                  step={1}
+                  className="w-full"
+                />
+              </div>
             </CardContent>
           </Card>
 
           {/* Reverb Control */}
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center justify-between">
-                <span>Reverb</span>
-                <Switch checked={useReverb} onCheckedChange={setUseReverb} />
+          <Card className="bg-white/80 dark:bg-gray-800/80 backdrop-blur-sm">
+            <CardHeader className="pb-3">
+              <CardTitle className="flex items-center gap-2 text-lg">
+                <Settings className="h-5 w-5 text-purple-600" />
+                Reverb
               </CardTitle>
             </CardHeader>
             <CardContent>
-              <p className="text-sm text-gray-600">{useReverb ? "Reverb enabled" : "Reverb disabled"}</p>
+              <div className="flex items-center justify-between">
+                <span className="text-sm text-gray-600 dark:text-gray-400">Add spatial depth</span>
+                <Switch checked={useReverb} onCheckedChange={setUseReverb} />
+              </div>
             </CardContent>
           </Card>
 
           {/* MIDI Control */}
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <Settings className="h-5 w-5" />
+          <Card className="bg-white/80 dark:bg-gray-800/80 backdrop-blur-sm">
+            <CardHeader className="pb-3">
+              <CardTitle className="flex items-center gap-2 text-lg">
+                <Keyboard className="h-5 w-5 text-green-600" />
                 MIDI Keyboard
               </CardTitle>
             </CardHeader>
             <CardContent>
-              <Select value={selectedMidiDevice} onValueChange={setSelectedMidiDevice}>
-                <SelectTrigger>
-                  <SelectValue placeholder={midiSupported ? "Select MIDI device" : "MIDI not supported"} />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="none">No device selected</SelectItem> {/* Updated value prop */}
-                  {midiDevices.map((device) => (
-                    <SelectItem key={device.id} value={device.id}>
-                      {device.name} by {device.manufacturer}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <div className="space-y-3">
+                <div className="flex items-center gap-2">
+                  <Badge variant={midiSupported ? "default" : "destructive"}>
+                    {midiSupported ? "Supported" : "Not Supported"}
+                  </Badge>
+                </div>
+                {midiDevices.length > 0 && (
+                  <Select value={selectedMidiDevice} onValueChange={setSelectedMidiDevice}>
+                    <SelectTrigger>
+                      <SelectValue placeholder="Select MIDI device" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {midiDevices.map((device) => (
+                        <SelectItem key={device.id} value={device.id}>
+                          {device.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                )}
+              </div>
             </CardContent>
           </Card>
 
           {/* Transpose Control */}
-          <Card>
-            <CardHeader>
-              <CardTitle>Transpose - {getRootNoteName()}</CardTitle>
+          <Card className="bg-white/80 dark:bg-gray-800/80 backdrop-blur-sm">
+            <CardHeader className="pb-3">
+              <CardTitle className="flex items-center gap-2 text-lg">
+                <Music className="h-5 w-5 text-orange-600" />
+                Transpose
+              </CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="flex items-center justify-between">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setTranspose(Math.max(-11, transpose - 1))}
-                  disabled={transpose <= -11}
-                >
-                  <Minus className="h-4 w-4" />
-                </Button>
-                <span className="text-xl font-mono">{transpose}</span>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setTranspose(Math.min(11, transpose + 1))}
-                  disabled={transpose >= 11}
-                >
-                  <Plus className="h-4 w-4" />
-                </Button>
+              <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-gray-600 dark:text-gray-400">Root Note</span>
+                  <Badge variant="outline">{getRootNoteName()}</Badge>
+                </div>
+                <div className="flex items-center justify-between gap-4">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setTranspose(Math.max(-11, transpose - 1))}
+                    disabled={transpose <= -11}
+                  >
+                    -
+                  </Button>
+                  <span className="font-mono text-lg min-w-[3ch] text-center">
+                    {transpose > 0 ? `+${transpose}` : transpose}
+                  </span>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setTranspose(Math.min(11, transpose + 1))}
+                    disabled={transpose >= 11}
+                  >
+                    +
+                  </Button>
+                </div>
               </div>
             </CardContent>
           </Card>
 
           {/* Octave Control */}
-          <Card>
-            <CardHeader>
-              <CardTitle>Current Octave</CardTitle>
+          <Card className="bg-white/80 dark:bg-gray-800/80 backdrop-blur-sm">
+            <CardHeader className="pb-3">
+              <CardTitle className="flex items-center gap-2 text-lg">
+                <Settings className="h-5 w-5 text-indigo-600" />
+                Current Octave
+              </CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="flex items-center justify-between">
+              <div className="flex items-center justify-between gap-4">
                 <Button
                   variant="outline"
                   size="sm"
-                  onClick={() => setOctave(Math.max(0, octave - 1))}
-                  disabled={octave <= 0}
+                  onClick={() => setCurrentOctave(Math.max(0, currentOctave - 1))}
+                  disabled={currentOctave <= 0}
                 >
-                  <Minus className="h-4 w-4" />
+                  -
                 </Button>
-                <span className="text-xl font-mono">{octave}</span>
+                <span className="font-mono text-xl min-w-[2ch] text-center">{currentOctave}</span>
                 <Button
                   variant="outline"
                   size="sm"
-                  onClick={() => setOctave(Math.min(6, octave + 1))}
-                  disabled={octave >= 6}
+                  onClick={() => setCurrentOctave(Math.min(6, currentOctave + 1))}
+                  disabled={currentOctave >= 6}
                 >
-                  <Plus className="h-4 w-4" />
+                  +
                 </Button>
               </div>
             </CardContent>
           </Card>
 
           {/* Additional Reeds Control */}
-          <Card>
-            <CardHeader>
-              <CardTitle>Additional Reeds</CardTitle>
+          <Card className="bg-white/80 dark:bg-gray-800/80 backdrop-blur-sm">
+            <CardHeader className="pb-3">
+              <CardTitle className="flex items-center gap-2 text-lg">
+                <Volume2 className="h-5 w-5 text-red-600" />
+                Additional Reeds
+              </CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="flex items-center justify-between">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setAdditionalReeds(Math.max(0, additionalReeds - 1))}
-                  disabled={additionalReeds <= 0}
-                >
-                  <Minus className="h-4 w-4" />
-                </Button>
-                <span className="text-xl font-mono">{additionalReeds}</span>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setAdditionalReeds(Math.min(6 - octave, additionalReeds + 1))}
-                  disabled={octave + additionalReeds >= 6}
-                >
-                  <Plus className="h-4 w-4" />
-                </Button>
+              <div className="space-y-3">
+                <p className="text-xs text-gray-600 dark:text-gray-400">Layer multiple octaves for richer sound</p>
+                <div className="flex items-center justify-between gap-4">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setAdditionalReeds(Math.max(0, additionalReeds - 1))}
+                    disabled={additionalReeds <= 0}
+                  >
+                    -
+                  </Button>
+                  <span className="font-mono text-xl min-w-[2ch] text-center">{additionalReeds}</span>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setAdditionalReeds(Math.min(6 - currentOctave, additionalReeds + 1))}
+                    disabled={currentOctave + additionalReeds >= 6}
+                  >
+                    +
+                  </Button>
+                </div>
               </div>
             </CardContent>
           </Card>
         </div>
 
-        {/* Instructions */}
-        <Card className="mt-6">
-          <CardHeader>
-            <CardTitle>How to Play</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
-              <div>
-                <h4 className="font-semibold mb-2">Keyboard Controls:</h4>
-                <ul className="space-y-1 text-gray-600">
-                  <li>• Use keys ` 1 q 2 w e 4 r 5 t y 7 u 8 i 9 o p - [ = ] \ to play notes</li>
-                  <li>• White keys: ` q w e r t y u i o p [ ] \</li>
-                  <li>• Black keys: 1 2 4 5 7 8 9 - =</li>
-                </ul>
-              </div>
-              <div>
-                <h4 className="font-semibold mb-2">Features:</h4>
-                <ul className="space-y-1 text-gray-600">
-                  <li>• Connect MIDI keyboard for better experience</li>
-                  <li>• Adjust volume, reverb, and transpose settings</li>
-                  <li>• Change octaves and add additional reed layers</li>
-                  <li>• Settings are automatically saved</li>
-                </ul>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
+        {/* Footer */}
+        <div className="text-center mt-8 pt-8 border-t border-gray-200 dark:border-gray-700">
+          <p className="text-sm text-gray-500 dark:text-gray-400">
+            Web Harmonium - Experience the traditional Indian harmonium in your browser
+          </p>
+          <p className="text-xs text-gray-400 dark:text-gray-500 mt-1">
+            Use your keyboard or connect a MIDI controller to play
+          </p>
+        </div>
       </div>
     </div>
   )
